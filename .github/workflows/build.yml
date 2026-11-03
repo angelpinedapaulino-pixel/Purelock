@@ -905,7 +905,7 @@ jobs:
           unzip -q /tmp/purelock.zip -d /tmp/purelock-src
           cp -a /tmp/purelock-src/PureLock/. .
 
-            - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
