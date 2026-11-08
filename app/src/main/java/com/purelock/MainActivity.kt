@@ -1,24 +1,23 @@
 package com.purelock
 
-import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.admin.DevicePolicyManager
-import android.content.ComponentName
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
-import android.net.VpnService
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.widget.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
     private val BG = 0xFF0F1115.toInt()
@@ -27,52 +26,51 @@ class MainActivity : Activity() {
     private val RED = 0xFFE74C3C.toInt()
     private val AMBER = 0xFFF1C40F.toInt()
     private val MUTED = 0xFF9AA0AA.toInt()
+    private val CMD = "adb shell dpm set-device-owner com.purelock/.AdminReceiver"
 
     private lateinit var root: LinearLayout
     private val h = Handler(Looper.getMainLooper())
     private var sig = ""
     private var cdView: TextView? = null
+    private var lastApply = 0L
     private val tick = object : Runnable { override fun run() { render(); h.postDelayed(this, 1000) } }
 
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
         window.statusBarColor = BG; window.navigationBarColor = BG
-        if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(36), dp(20), dp(24)) }
         setContentView(ScrollView(this).apply { setBackgroundColor(BG); addView(root) })
     }
     override fun onResume() { super.onResume(); sig = ""; h.post(tick) }
     override fun onPause() { super.onPause(); h.removeCallbacks(tick) }
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(r: Int, res: Int, d: Intent?) {
-        super.onActivityResult(r, res, d)
-        if (res == RESULT_OK) startVpn()
-    }
-    private fun startVpn() { try { startService(Intent(this, DnsVpnService::class.java)) } catch (_: Exception) {} }
 
-    // ---------- pantallas ----------
+    // ---------- selección de pantalla ----------
     private fun render() {
         if (!Store.hasPin(this)) {
             if (sig != "pin") { sig = "pin"; root.removeAllViews(); buildPin() }
             return
         }
-        val vpnOk = VpnService.prepare(this) == null
-        val a11y = Store.a11yOn(this)
-        val admin = getSystemService(DevicePolicyManager::class.java)
-            .isAdminActive(ComponentName(this, AdminReceiver::class.java))
-        if (!(vpnOk && a11y && admin)) {
-            val s = "perms$vpnOk$a11y$admin"
-            if (s != sig) { sig = s; root.removeAllViews(); buildPerms(vpnOk, a11y, admin) }
+        if (!Enforcer.isOwner(this)) {
+            if (sig != "owner") { sig = "owner"; root.removeAllViews(); buildOwner() }
             return
         }
-        Store.arm(this)
+        if (!Store.armed(this)) {
+            if (sig != "arm") { sig = "arm"; root.removeAllViews(); buildArm() }
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastApply > 30_000) {
+            lastApply = now
+            val app = applicationContext
+            Thread { Enforcer.apply(app) }.start()
+        }
+        val st = Enforcer.status(this)
         val open = Store.unlockOpen(this)
-        if (!DnsVpnService.running && !open) startVpn()
         val cd = Store.cooldownLeft(this)
         val phase = when { open -> "open"; cd < 0 -> "none"; cd > 0 -> "wait"; else -> "ready" }
-        val s = "dash${DnsVpnService.running}${Store.vpnActive(this)}${Store.days(this)}" +
-            "${Store.attempts(this)}$phase${Store.privateDns(this)}${Store.alwaysOn(this)}${Store.lockdown(this)}"
-        if (s != sig) { sig = s; root.removeAllViews(); buildDash(phase) }
+        val s = "dash${st.dnsOk}${st.dnsText}${st.restrictionsOk}${st.chromeOk}${Store.days(this)}${Store.corrections(this)}" +
+            "$phase${Store.suspended(this)}${Store.lastCheck(this) / 60000}${Store.error(this)}"
+        if (s != sig) { sig = s; root.removeAllViews(); buildDash(st, phase) }
         cdView?.text = when (phase) {
             "wait" -> "Faltan ${fmt(cd)} para poder ingresar el PIN"
             "open" -> "Ventana abierta: ${fmt(Store.windowLeft(this))}"
@@ -80,11 +78,12 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- 1) persona de confianza ----------
     private fun buildPin() {
         add(tv("PURELOCK", 28f, GREEN, true))
         add(tv("Persona de confianza", 18f, Color.WHITE, true))
         add(tv("Entrega el teléfono a la persona que te va a acompañar. ELLA escribe el PIN y no te lo dice. " +
-            "Sin ese PIN (y sin esperar 24 h) no podrás apagar la protección.", 14f, MUTED), 16)
+            "Sin ese PIN (y sin esperar 24 h) no podrás quitar la protección. El PIN no se puede cambiar después.", 14f, MUTED), 16)
         val name = et("Nombre de la persona de confianza", InputType.TYPE_CLASS_TEXT)
         val phone = et("Su teléfono (con código de país)", InputType.TYPE_CLASS_PHONE)
         val numPw = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
@@ -101,63 +100,87 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun buildPerms(vpnOk: Boolean, a11y: Boolean, admin: Boolean) {
+    // ---------- 2) falta Device Owner ----------
+    private fun buildOwner() {
         add(tv("PURELOCK", 28f, GREEN, true))
-        add(tv("Configuración inicial", 18f, Color.WHITE, true))
-        add(tv("Antes de continuar: Ajustes > Red > DNS privado debe estar en \"Automático\" (no en \"Nombre de host\").", 13f, MUTED), 16)
-        add(card(tv("Qué NO puede garantizar PureLock", 14f, AMBER, true),
-            tv("Reduce el riesgo y añade fricción, pero no es imposible de saltar: un reinicio de fábrica, el modo seguro, " +
-                "apps con DNS propio o borrar la app desde tu cuenta de Google desde otro dispositivo lo evaden. " +
-                "Lo más fuerte es que otra persona controle tu cuenta de Google y el PIN.", 12f, Color.WHITE)))
-        perm("1. Filtro DNS (VPN local)", "Solo reenvía consultas DNS; no ve tu tráfico.", vpnOk, "Permitir") {
-            VpnService.prepare(this)?.let { startActivityForResult(it, 1) }
-        }
-        perm("2. Guardián (Accesibilidad)", "Bloquea las pantallas de Ajustes que apagan el filtro. " +
-            "Si sale en gris: Ajustes > Apps > PureLock > ⋮ > Permitir ajustes restringidos.", a11y, "Activar") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        perm("3. Anti-desinstalación (Administrador)", "Android no deja desinstalar una app administradora.", admin, "Activar") {
-            startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
-                .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, ComponentName(this, AdminReceiver::class.java))
-                .putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Evita que PureLock se desinstale en un impulso."))
-        }
+        add(card(
+            tv("Falta el modo propietario del dispositivo", 17f, AMBER, true),
+            tv("En Android 12 ninguna app puede impedir que cambies el DNS privado si no es \"propietaria del dispositivo\". " +
+                "Sin ese modo, PureLock NO protege nada. Se activa una sola vez desde una computadora con este comando " +
+                "(requisitos y pasos exactos en el README):", 13f, Color.WHITE)))
+        add(card(tv(CMD, 13f, GREEN, true)))
+        add(btn("Copiar comando", CARD) {
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("comando", CMD))
+            toast("Copiado")
+        })
+        add(tv("Cuando el comando diga \"Success\", vuelve a abrir esta pantalla.", 12f, MUTED))
     }
 
-    private fun perm(title: String, desc: String, ok: Boolean, label: String, f: () -> Unit) {
-        val v = mutableListOf(tv(title, 16f, Color.WHITE, true), tv(desc, 12f, MUTED))
-        if (ok) v.add(tv("✔ Listo", 14f, GREEN, true)) else v.add(btn(label, GREEN, f))
-        add(card(*v.toTypedArray()))
+    // ---------- 3) activar ----------
+    private fun buildArm() {
+        add(tv("PURELOCK", 28f, GREEN, true))
+        add(card(
+            tv("Todo listo para activar", 17f, GREEN, true),
+            tv("Al activar, Android impondrá estas restricciones:\n" +
+                "• DNS privado fijo: ${Enforcer.HOST}\n" +
+                "• No se puede cambiar el DNS privado, ni configurar VPN, ni restablecer redes\n" +
+                "• No se pueden instalar APK externos, crear usuarios, usar modo seguro, restablecer de fábrica ni depurar por USB\n" +
+                "• La app no se puede desinstalar ni borrarle los datos\n" +
+                "• Chrome: sin incógnito, sin DNS propio, SafeSearch forzado\n" +
+                "• Otros navegadores (Firefox, Brave, Xiaomi Browser…) suspendidos\n\n" +
+                "Para deshacerlo: solicitar desbloqueo, esperar 24 h y que ${Store.name(this)} escriba el PIN. " +
+                "Si el PIN se pierde, la única salida es borrar el teléfono desde el modo recovery (pierdes los datos).", 13f, Color.WHITE)))
+        add(btn("Activar protección", GREEN) {
+            AlertDialog.Builder(this).setTitle("¿Activar ahora?")
+                .setMessage("Esto no se puede deshacer sin el PIN de ${Store.name(this)} y 24 h de espera.")
+                .setPositiveButton("Activar") { _, _ ->
+                    Store.arm(this)
+                    val app = applicationContext
+                    Thread { Enforcer.apply(app) }.start()
+                    sig = ""
+                }.setNegativeButton("Cancelar", null).show()
+        })
     }
 
-    private fun buildDash(phase: String) {
+    // ---------- 4) panel ----------
+    private fun buildDash(st: Enforcer.Status, phase: String) {
         val open = phase == "open"
-        val ok = DnsVpnService.running && Store.vpnActive(this)
+        val good = st.owner && st.dnsOk && st.restrictionsOk == st.restrictionsTotal
         val (label, col) = when {
             open -> "VENTANA DE DESBLOQUEO ABIERTA" to AMBER
-            ok -> "PROTECCIÓN ACTIVADA" to GREEN
-            else -> "PROTECCIÓN DESACTIVADA" to RED
+            good -> "PROTECCIÓN ACTIVA" to GREEN
+            else -> "PROTECCIÓN INCOMPLETA" to RED
         }
         add(tv("PURELOCK", 14f, MUTED, true), 6)
-        add(card(tv(label, 22f, col, true), tv("Filtro DNS CleanBrowsing Adult", 13f, MUTED)))
+        add(card(tv(label, 22f, col, true),
+            tv(if (good && !open) "Verificado ahora mismo leyendo la configuración de Android" else "Revisa los detalles de abajo", 12f, MUTED)))
 
         val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         r.addView(card(tv("${Store.days(this)}", 30f, GREEN, true), tv("días protegido", 12f, MUTED)),
             LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(0, 0, dp(6), 0) })
-        r.addView(card(tv("${Store.attempts(this)}", 30f, if (Store.attempts(this) > 0) AMBER else GREEN, true), tv("intentos de desactivación", 12f, MUTED)),
+        r.addView(card(tv("${Store.corrections(this)}", 30f, if (Store.corrections(this) > 0) AMBER else GREEN, true),
+            tv("cambios revertidos", 12f, MUTED)),
             LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(6), 0, 0, 0) })
         add(r)
 
-        add(card(tv("Estado del DNS", 14f, MUTED, true),
-            tv(if (DnsVpnService.running) "Activo · ${DnsVpnService.SERVERS[0]} / ${DnsVpnService.SERVERS[1]}" else "Inactivo",
-                15f, if (DnsVpnService.running) GREEN else RED, true),
-            tv("DNS privado de Android: ${Store.privateDns(this)}", 12f, MUTED)))
+        val lines = mutableListOf<View>(tv("Estado verificado", 14f, MUTED, true))
+        lines.add(tv((if (st.dnsOk) "✔ " else "✖ ") + "DNS privado: ${st.dnsText}", 13f, if (st.dnsOk) GREEN else RED))
+        lines.add(tv((if (st.restrictionsOk == st.restrictionsTotal) "✔ " else "✖ ") +
+            "Restricciones de Android: ${st.restrictionsOk}/${st.restrictionsTotal}", 13f,
+            if (st.restrictionsOk == st.restrictionsTotal) GREEN else RED))
+        lines.add(tv((if (st.chromeOk) "✔ " else "✖ ") + "Chrome sin incógnito ni DNS propio", 13f, if (st.chromeOk) GREEN else RED))
+        lines.add(tv("Navegadores alternativos suspendidos: ${Store.suspended(this)}", 13f, Color.WHITE))
+        val lc = Store.lastCheck(this)
+        lines.add(tv("Última comprobación: " + (if (lc == 0L) "—" else SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(lc))), 12f, MUTED))
+        if (Store.error(this).isNotEmpty()) lines.add(tv("⚠ ${Store.error(this)}", 12f, AMBER))
+        add(card(*lines.toTypedArray()))
 
-        val w = mutableListOf<String>()
-        if (Store.privateDns(this) == "hostname") w += "⚠ DNS privado en \"Nombre de host\": ponlo en Automático o puede cortar el internet."
-        if (!Store.alwaysOn(this)) w += "⚠ Falta VPN siempre activa: Ajustes > Red > VPN > PureLock > ⚙ (activa también \"Bloquear conexiones sin VPN\")."
-        else if (!Store.lockdown(this)) w += "⚠ Falta activar \"Bloquear conexiones sin VPN\"."
-        w += "ℹ Apps con DNS propio (DoH en Firefox/Brave, VPN de terceros) pueden saltarse el filtro; PureLock no puede detectarlo."
-        add(card(tv("Revisión de evasiones", 14f, MUTED, true), tv(w.joinToString("\n\n"), 12f, Color.WHITE)))
+        add(card(tv("Lo que PureLock NO garantiza", 14f, AMBER, true),
+            tv("• Si tu Xiaomi/MIUI no respeta alguna restricción en su pantalla de Ajustes, PureLock restaura el DNS en segundos o, como máximo, en ~15 min.\n" +
+                "• No evita un borrado desde el modo recovery ni otro teléfono.\n" +
+                "• No filtra apps con su propio DNS ni navegadores que no estén en su lista.\n" +
+                "• El DNS filtra dominios; no todo el contenido.\n" +
+                "• Quien controle el repositorio y la clave de firma de esta app puede publicar una versión sin PIN.", 12f, Color.WHITE)))
 
         add(btn("🆘 Pedir ayuda a ${Store.name(this)}", RED) {
             sms("Estoy teniendo un impulso fuerte ahora mismo. ¿Puedes llamarme o hablar conmigo?")
@@ -166,17 +189,11 @@ class MainActivity : Activity() {
             try { startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Store.phone(this)))) } catch (_: Exception) {}
         })
 
-        add(tv("PureLock añade fricción, no garantiza protección total. Mantén a tu persona de confianza al tanto.", 11f, MUTED), 8)
-        if (!DnsVpnService.running && !open) add(btn("Reactivar protección", GREEN) {
-            val i = VpnService.prepare(this)
-            if (i != null) startActivityForResult(i, 1) else startVpn()
-        })
-
         cdView = null
         when (phase) {
             "none" -> add(btn("Solicitar desbloqueo (espera 24 h)", CARD) {
                 AlertDialog.Builder(this).setTitle("Solicitar desbloqueo")
-                    .setMessage("Deberás esperar 24 horas y luego tu persona de confianza tendrá que escribir el PIN. Se abrirá un mensaje para avisarle.")
+                    .setMessage("Deberás esperar 24 horas y luego ${Store.name(this)} tendrá que escribir el PIN. Se abrirá un mensaje para avisarle.")
                     .setPositiveButton("Solicitar") { _, _ ->
                         Store.requestUnlock(this)
                         sms("Pedí desbloquear PureLock. Si no quieres que lo haga, no me des el PIN. Gracias por acompañarme.")
@@ -189,8 +206,25 @@ class MainActivity : Activity() {
             }
             "open" -> {
                 cdView = tv("", 14f, AMBER); add(card(cdView!!))
-                add(btn("Pausar filtro DNS", RED) { startService(Intent(this, DnsVpnService::class.java).setAction("STOP")) })
-                add(btn("Cerrar ventana ahora", GREEN) { Store.closeWindow(this) })
+                add(btn("Pausar protección (se reactiva sola al cerrar la ventana)", RED) {
+                    val app = applicationContext
+                    Thread { Enforcer.release(app); Enforcer.scheduleReapply(app, Store.windowLeft(app)) }.start()
+                    toast("Protección en pausa")
+                })
+                add(btn("Quitar protección definitivamente", RED) {
+                    AlertDialog.Builder(this).setTitle("Quitar protección")
+                        .setMessage("Se quitará el modo propietario y todas las restricciones. PureLock dejará de proteger.")
+                        .setPositiveButton("Quitar") { _, _ ->
+                            val app = applicationContext
+                            Thread { Enforcer.removeOwner(app) }.start()
+                            sig = ""
+                        }.setNegativeButton("Cancelar", null).show()
+                })
+                add(btn("Cerrar ventana ahora", GREEN) {
+                    Store.closeWindow(this)
+                    val app = applicationContext
+                    Thread { Enforcer.apply(app) }.start()
+                })
             }
         }
     }
@@ -199,7 +233,9 @@ class MainActivity : Activity() {
         val et = EditText(this).apply { inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD }
         AlertDialog.Builder(this).setTitle("PIN del administrador").setView(et)
             .setPositiveButton("Confirmar") { _, _ ->
-                toast(when (Store.confirmUnlock(this, et.text.toString())) {
+                val res = Store.confirmUnlock(this, et.text.toString())
+                if (res == Store.R.OK) Enforcer.scheduleReapply(applicationContext, Store.WINDOW_MS)
+                toast(when (res) {
                     Store.R.OK -> "Ventana abierta por 10 minutos"
                     Store.R.BAD_PIN -> "PIN incorrecto"
                     Store.R.LOCKED -> "Demasiados intentos: bloqueado 1 hora"

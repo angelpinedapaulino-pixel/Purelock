@@ -1,58 +1,94 @@
-# PURELOCK – Mi protección contra la pornografía (Android)
+# PureLock 2.0 — bloqueo del DNS privado con Device Owner (Android 12 / Xiaomi MIUI)
 
-Fuerza el DNS **CleanBrowsing Adult Filter** con una VPN local (solo DNS) y hace difícil apagarlo durante un impulso.
-**Es fricción, no un muro:** lee la sección de limitaciones.
+**Qué hace:** fija el DNS privado `adult-filter-dns.cleanbrowsing.org` y le pide a Android que impida cambiarlo,
+con los controles oficiales de administración (DevicePolicyManager). Para quitarlo hace falta: pedir desbloqueo → esperar 24 h →
+PIN de tu persona de confianza → ventana de 10 min.
 
-## A. Conseguir el APK desde GitHub (botón de descarga)
-Funciona desde el navegador del celular. Necesitas una cuenta gratuita en github.com.
+## Limitación técnica (léela antes de perder tiempo)
+En Android 12 **ninguna app puede bloquear el DNS privado si no es "propietaria del dispositivo" (Device Owner)**.
+Accesibilidad y Administrador normal solo "simulan" el bloqueo y son justo lo que Google Play Protect marca; por eso se eliminaron.
+Device Owner **se activa una sola vez desde una computadora con ADB**, y exige:
+- Que el teléfono **no tenga cuentas** (Mi, Google…) ni **usuarios extra** (Segundo espacio, Apps duales) en ese momento.
+- En MIUI, activar **Depuración USB (ajustes de seguridad)** en Opciones de desarrollador. MIUI lo condiciona a iniciar sesión con Mi Account, lo que choca con el requisito anterior; es la parte más probable de dar problemas (no lo pude probar en tu modelo).
+- **No exige restablecer de fábrica** en principio: se puede hacer en un teléfono ya configurado si se cumplen esos requisitos. Si Android lo rechaza y no puedes quitar la causa, la única salida sería un restablecimiento.
 
-**Opción 1 – Solo desde el celular (un único archivo)**
-1. En github.com toca **+ > New repository**. Nombre: `purelock`. Puede ser **Private**. Toca **Create repository**.
-2. Dentro del repositorio toca **Add file > Create new file**.
-3. En el campo del nombre escribe exactamente `.github/workflows/build.yml` (las barras crean las carpetas).
-4. Abre el archivo `PureLock-build.yml` de la entrega, copia TODO su contenido y pégalo en el editor.
-5. Toca **Commit changes > Commit changes**.
-6. Abre la pestaña **Actions**. Verás "Construir PureLock APK" ejecutándose (5–10 min). Si pide habilitar Actions, acepta. Si no arranca: elígelo y toca **Run workflow**.
-7. Cuando salga el check verde ✔, vuelve a la pestaña **Code**. A la derecha (o abajo, en el celular) toca **Releases > PureLock build 1** y luego **PureLock.apk**: ese es el enlace de descarga.
+**No sé si tu MIUI respeta la restricción "no cambiar DNS privado" en su pantalla de Ajustes** (MIUI personaliza Ajustes). Por eso hay un segundo mecanismo: PureLock vigila el ajuste y lo restaura en segundos
+(disparador por cambio) o como máximo en ~15 min (tarea periódica). Se prueba en el paso 5.
 
-**Opción 2 – Repositorio completo (con computadora):** descomprime `PureLock.zip`, sube TODO su contenido a un repositorio nuevo (rama `main`). El workflow `.github/workflows/build.yml` compila solo y publica en Releases. También puedes abrir la carpeta en **Android Studio** > Build > Build APK(s).
+## Qué cambió respecto a build-14
+Comprobé el repositorio: el código de GitHub era idéntico al zip anterior (solo difería el workflow).
+- **Eliminado:** servicio de Accesibilidad, VPN local, permisos INTERNET / ACCESS_NETWORK_STATE / POST_NOTIFICATIONS, receptor de arranque anterior.
+- **Permisos del APK:** solo `RECEIVE_BOOT_COMPLETED` (reaplicar tras reiniciar). Nada de contactos, SMS, llamadas, archivos, ubicación ni internet. Sin publicidad, analítica ni servidores. `allowBackup=false`.
+- **Nuevo (todo API oficial):** DNS privado fijo; restricciones de Android (no cambiar DNS privado, no VPN, no restablecer redes, no instalar APK externos, no crear usuarios, no modo seguro, no restablecer de fábrica, no depuración USB); la app no se desinstala ni se le borran los datos (`setUserControlDisabledPackages`); Chrome con incógnito desactivado, DNS propio apagado y SafeSearch; navegadores alternativos (Firefox, Brave, Xiaomi Browser…) suspendidos. El panel **lee de vuelta** el estado real desde Android.
+- **Firma:** build de **release con tu clave** (secretos de GitHub). El workflow se detiene si faltan, y también si el APK queda firmado con clave debug o pide permisos de más.
 
-El APK también aparece como "Artifact" dentro de cada ejecución en Actions, pero el enlace de Releases es más cómodo.
+## 1. Crear tu clave de firma (una sola vez, en una computadora con Java)
+```
+keytool -genkeypair -v -keystore purelock-release.jks -alias purelock -keyalg RSA -keysize 4096 -validity 10000
+```
+Convierte el archivo a texto base64: Linux `base64 -w0 purelock-release.jks`; macOS `base64 -i purelock-release.jks`;
+Windows PowerShell `[Convert]::ToBase64String([IO.File]::ReadAllBytes("purelock-release.jks"))`.
 
-## B. Instalar en el celular
-1. Descarga `PureLock.apk` y ábrelo. Android pedirá permitir "instalar apps desconocidas" para tu navegador o gestor de archivos.
-2. Si Play Protect avisa de una app "no verificada", toca **Instalar de todos modos** (el APK está firmado con clave de depuración y usa Accesibilidad).
-3. Antes de abrir la app: Ajustes > Red > **DNS privado = Automático**. Quita el DNS manual de CleanBrowsing.
-4. Abre PureLock y entrega el teléfono a tu persona de confianza (sección C).
-5. Concede los 3 permisos de la pantalla de configuración:
-   - **VPN** (filtro DNS).
-   - **Accesibilidad** (guardián). En Android 13+, si aparece en gris: Ajustes > Apps > PureLock > ⋮ > *Permitir ajustes restringidos*, y vuelve a intentarlo.
-   - **Administrador del dispositivo** (anti-desinstalación).
-6. Ajustes > Red > VPN > PureLock > ⚙: activa **VPN siempre activa** y **Bloquear conexiones sin VPN**. (Hazlo ahora; después el guardián bloqueará esa pantalla.)
-7. Desactiva "Usar DNS seguro" en Chrome y desinstala navegadores con DoH propio (Firefox, Brave) o no los uses.
-8. Si el panel muestra "PROTECCIÓN ACTIVADA" y la revisión de evasiones no muestra ⚠, quedó lista.
+En GitHub: **Settings > Secrets and variables > Actions > New repository secret**, crea 4:
+`KEYSTORE_BASE64` (el texto), `KEYSTORE_PASSWORD`, `KEY_ALIAS` (= `purelock`), `KEY_PASSWORD`.
 
-## C. Persona de confianza
-En el primer arranque, ella escribe su nombre, su teléfono y un PIN de 6+ dígitos que tú no debes ver. El PIN se guarda solo como hash (PBKDF2); nadie puede leerlo, ni siquiera tú o yo.
-Para cambiar algo: **Solicitar desbloqueo** (se le abre un SMS para avisarla) → espera de 24 h → ella escribe el PIN → ventana de 10 minutos → se vuelve a bloquear sola. 5 PIN fallidos = bloqueo de 1 hora. Si ella pierde el PIN, solo queda el reinicio de fábrica.
-Botones del panel: **Pedir ayuda** (SMS pre-escrito) y **Llamar**.
-Consejo: que ella también controle tu cuenta de Google (contraseña/recuperación). Es lo que más cierra las salidas.
+**Cómo proteger la clave privada**
+- Nunca la subas al repositorio (`.gitignore` ya excluye `*.jks`). Los secretos de GitHub no se pueden leer de vuelta.
+- Guarda el `.jks` y las contraseñas en un gestor de contraseñas + una copia offline cifrada. Borra el texto base64 del portapapeles y de archivos.
+- Activa verificación en dos pasos en GitHub y no aceptes colaboradores que no necesites.
+- Si pierdes la clave no podrás actualizar la app instalada (sí podrás quitarla con el PIN y reinstalar). Si se filtra, genera otra y reinstala.
+- Quien controle el repositorio y esta clave puede publicar una versión sin PIN. Para que la protección sea real, **deja el repositorio y los secretos a cargo de tu persona de confianza**.
 
-## D. Qué impide desactivarlo
-- VPN local de DNS + "siempre activa" + "bloquear sin VPN": apagarla corta el internet en lugar de dejarte sin filtro.
-- Guardián (Accesibilidad): te saca de Ajustes si abres pantallas con "PureLock", DNS privado con host, VPN siempre activa, restablecimiento de fábrica o depuración USB, y cuenta cada intento.
-- Administrador del dispositivo: Android no permite desinstalar la app.
-- Vigilancia cada 15 s con reactivación y avisos; arranca sola tras reiniciar.
-- PIN de otra persona + espera de 24 h + ventana de 10 min.
+## 2. Subir los cambios y compilar
+Añade primero los 4 secretos (si no, el build falla a propósito). Luego, en una computadora:
+```
+git clone https://github.com/angelpinedapaulino-pixel/Purelock
+cd Purelock
+git am < /ruta/a/PureLock-fix.patch
+git push origin main
+```
+Se lanza **Actions > Construir y publicar PureLock**. Al terminar (check verde) aparece el Release `build-N` con `PureLock.apk`.
+Borra los Releases antiguos (build-1…14): son APK de depuración.
 
-## E. Limitaciones (sin promesas falsas)
-- Se salta con: reinicio de fábrica desde recovery, modo seguro, borrar la app desde tu cuenta de Google en otro dispositivo, ADB por USB, o un teléfono secundario.
-- Una VPN de terceros reemplaza a PureLock; Android revoca el permiso y la app solo puede avisarte.
-- Apps con DNS propio (DoH en Firefox/Brave, VPNs, algunos navegadores) evaden cualquier filtro DNS y PureLock no puede detectarlo. Solo se filtra IPv4/UDP.
-- Un filtro DNS no cubre todo (redes sociales, buscadores, contenido en apps). Si CleanBrowsing cae, no se resuelve nada.
-- El guardián usa coincidencia de texto: según la marca puede bloquear de más (por ejemplo la lista de apps si aparece PureLock) o de menos. Se ajusta en `GuardService.kt` > `forbidden()`.
-- Un "dueño del dispositivo" real (la protección más fuerte) requiere configurar el teléfono con ADB desde una computadora; esta app no lo hace.
-- El código compila contra la API de Android 33 en mi verificación, pero no lo probé en un dispositivo físico.
+## 3. Comprobar que el APK corresponde al código
+En el Release se listan el **commit**, el **SHA-256 del APK** y el **certificado de firma**.
+En tu computadora: `sha256sum PureLock.apk` debe coincidir, y `gh attestation verify PureLock.apk -R angelpinedapaulino-pixel/Purelock`
+confirma que salió de ese repositorio y commit (si falla la atestación el build sigue, pero entonces no hay esa prueba).
 
-## iPhone
-iOS no permite una app así. Usa Tiempo en pantalla con un código que ponga otra persona, Restricciones de contenido > Contenido web > Limitar sitios para adultos, y bloquea cambios de cuenta y borrado de apps.
+## 4. Instalar en el Xiaomi (Android 12, MIUI)
+**A. Preparar**
+1. Si hay un PureLock anterior instalado, quítalo antes (mismo paquete, otra firma: no se puede actualizar encima). Si estuvo activo, usa su desbloqueo.
+2. Haz respaldo de tus datos.
+3. Ajustes > Cuentas y sincronización: quita las cuentas (Google, Mi…). Elimina **Segundo espacio** y **Apps duales**.
+4. Ajustes > Acerca del teléfono: toca 7 veces "Versión de MIUI". En Ajustes adicionales > Opciones de desarrollador activa **Depuración USB**, **Instalar mediante USB** y **Depuración USB (ajustes de seguridad)**.
+
+**B. Instalar el APK** desde el Release (permite instalar desde tu navegador/gestor cuando Android lo pida). Si Play Protect vuelve a bloquearla, no lo esquives: copia el texto exacto del aviso y lo revisamos.
+
+**C. Activar Device Owner** (computadora con [platform-tools](https://developer.android.com/tools/releases/platform-tools), teléfono por USB, acepta la huella de depuración):
+```
+adb devices
+adb shell dpm set-device-owner com.purelock/.AdminReceiver
+```
+Debe decir `Success`. Errores típicos: *"already some accounts"* → faltan cuentas/usuarios por quitar; *"MANAGE_DEVICE_ADMINS"* → falta "Depuración USB (ajustes de seguridad)".
+Después puedes volver a añadir tus cuentas.
+
+**D. Configurar la app:** ábrela → tu persona de confianza escribe nombre, teléfono y PIN (6+ dígitos) → **Activar protección**.
+MIUI: Ajustes > Aplicaciones > Administrar apps > PureLock → **Inicio automático** activado y Ahorro de batería **Sin restricciones** (para que la vigilancia no la mate MIUI).
+
+**5. Prueba:** con la protección activa, intenta cambiar Ajustes > Conexión y uso compartido > DNS privado. O sale bloqueado, o lo cambias y PureLock lo restaura (el contador "cambios revertidos" sube).
+Si lo ves cambiado más de ~15 min, avísame con el modelo exacto.
+
+## 5. Permisos
+| Permiso | Para qué | Pide al usuario |
+|---|---|---|
+| `RECEIVE_BOOT_COMPLETED` | reaplicar al reiniciar | Nada (permiso normal) |
+| Device Owner (comando ADB) | fijar DNS y restricciones | Lo concedes tú una vez con el comando |
+
+Notificaciones, VPN, Accesibilidad, internet, contactos, SMS, llamadas, archivos y ubicación: **no se piden**.
+Los botones "Pedir ayuda" y "Llamar" solo abren tu app de mensajes/teléfono con el texto o número ya puesto.
+
+## 6. Limitaciones (sin promesas falsas)
+- Un borrado desde el **modo recovery**, otro teléfono o un servicio técnico lo evade. Si pierdes el PIN esa es la salida (pierdes los datos).
+- Con la depuración USB bloqueada no podrás reparar la app por ADB mientras esté activa.
+- Los navegadores/apps con DNS propio no listados siguen fuera de control. Un filtro DNS no cubre todo el contenido.
+- No pude compilar con Gradle ni probar en un Xiaomi desde mi entorno: verifiqué que el Kotlin compila contra el SDK de Android, que los XML/YAML son válidos y que el flujo de la clave funciona.
