@@ -35,7 +35,10 @@ jobs:
           KS: ${{ secrets.KEYSTORE_BASE64 }}
           PW: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
-          printf '%s' "$KS" | tr -d ' \r\n\t"' | base64 -d > "$RUNNER_TEMP/release.jks" || { echo "::error::KEYSTORE_BASE64 no es base64 válido. Vuelve a copiarlo completo."; exit 1; }
+          CLEAN=$(printf '%s' "$KS" | tr -cd 'A-Za-z0-9+/=')
+          echo "Longitud recibida en KEYSTORE_BASE64: ${#KS} | tras limpiar: ${#CLEAN} | empieza con: ${CLEAN:0:4}"
+          echo "(un keystore correcto mide unos 5000-6000 y empieza con MIIR o MIIQ)"
+          printf '%s' "$CLEAN" | base64 -d > "$RUNNER_TEMP/release.jks" || { echo "::error::KEYSTORE_BASE64 no es base64 válido (ver la longitud de arriba)."; exit 1; }
           keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$PW" > /dev/null || { echo "::error::El keystore no abre: KEYSTORE_PASSWORD no coincide o el archivo está dañado."; exit 1; }
           echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
